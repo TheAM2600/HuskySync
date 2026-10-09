@@ -1,0 +1,132 @@
+{
+  "reference_date": "2026-10-09",
+  "courses": [
+    { "code": "CSE 2050", "title": "Data Structures and Object-Oriented Design", "instructor": "Daniel Okafor" },
+    { "code": "MATH 2210Q", "title": "Applied Linear Algebra", "instructor": "Yuki Tanabe" },
+    { "code": "CHEM 1127Q", "title": "General Chemistry I", "instructor": "Rebecca Lindqvist" },
+    { "code": "ENGL 1007", "title": "Seminar and Studio in Writing and Multimodal Composition", "instructor": "James Abernathy" },
+    { "code": "COMM 1100", "title": "Principles of Public Speaking", "instructor": "Angela Whitfield" }
+  ],
+  "assignments": [
+    {
+      "id": "asg-001",
+      "course": "MATH 2210Q",
+      "title": "Problem Set 5: Eigenvalues and Eigenvectors",
+      "due_at": "2026-10-08T23:59:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 20,
+      "platform": "Gradescope"
+    },
+    {
+      "id": "asg-002",
+      "course": "CHEM 1127Q",
+      "title": "Pre-Lab Quiz 5: Calorimetry",
+      "due_at": "2026-10-09T08:00:00-04:00",
+      "submitted": true,
+      "submitted_at": "2026-10-08T22:41:00-04:00",
+      "points": 10,
+      "platform": "HuskyCT"
+    },
+    {
+      "id": "asg-003",
+      "course": "ENGL 1007",
+      "title": "Reading Response 4",
+      "due_at": "2026-10-07T09:30:00-04:00",
+      "submitted": true,
+      "submitted_at": "2026-10-07T09:12:00-04:00",
+      "points": 15,
+      "platform": "HuskyCT"
+    },
+    {
+      "id": "asg-004",
+      "course": "CSE 2050",
+      "title": "Lab 6: Linked Lists",
+      "due_at": "2026-10-10T23:59:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 10,
+      "platform": "Gradescope"
+    },
+    {
+      "id": "asg-005",
+      "course": "CHEM 1127Q",
+      "title": "ALEKS Objective 6: Thermochemistry",
+      "due_at": "2026-10-11T23:59:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 25,
+      "platform": "ALEKS"
+    },
+    {
+      "id": "asg-006",
+      "course": "COMM 1100",
+      "title": "Group Presentation Outline and Speaker Roles",
+      "due_at": "2026-10-12T23:59:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 20,
+      "platform": "HuskyCT"
+    },
+    {
+      "id": "asg-007",
+      "course": "CSE 2050",
+      "title": "Homework 4: Recursion and Merge Sort",
+      "due_at": "2026-10-13T23:59:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 50,
+      "platform": "Gradescope"
+    },
+    {
+      "id": "asg-008",
+      "course": "ENGL 1007",
+      "title": "Project 2 Draft: Rhetorical Analysis (1,200 words)",
+      "due_at": "2026-10-14T09:30:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 40,
+      "platform": "HuskyCT"
+    },
+    {
+      "id": "asg-009",
+      "course": "MATH 2210Q",
+      "title": "Problem Set 6: Diagonalization",
+      "due_at": "2026-10-15T23:59:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 20,
+      "platform": "Gradescope"
+    },
+    {
+      "id": "asg-010",
+      "course": "CHEM 1127Q",
+      "title": "Lab Report 4: Heat of Neutralization",
+      "due_at": "2026-10-16T17:00:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 30,
+      "platform": "HuskyCT"
+    },
+    {
+      "id": "asg-011",
+      "course": "COMM 1100",
+      "title": "Group Informative Presentation (in class)",
+      "due_at": "2026-10-20T12:30:00-04:00",
+      "submitted": false,
+      "submitted_at": null,
+      "points": 100,
+      "platform": "In class"
+    },
+    {
+      "id": "asg-012",
+      "course": "CSE 2050",
+      "title": "Homework 3: Stacks and Queues",
+      "due_at": "2026-10-02T23:59:00-04:00",
+      "submitted": true,
+      "submitted_at": "2026-10-02T23:54:00-04:00",
+      "points": 50,
+      "platform": "Gradescope"
+    }
+  ]
+}
