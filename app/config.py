@@ -31,6 +31,7 @@ class Settings:
     imap_username: str | None = None
     imap_password: str | None = field(default=None, repr=False)
     imap_access_token: str | None = field(default=None, repr=False)
+    google_tasklist_id: str = "@default"
 
     @property
     def tzinfo(self) -> ZoneInfo:
@@ -46,7 +47,7 @@ def load_settings() -> Settings:
         database_path=_path("HUSKYSYNC_DATABASE_PATH", data_dir / "husky_sync.sqlite3"),
         browser_profile_dir=_path("HUSKYSYNC_BROWSER_PROFILE_DIR", data_dir / "browser_profile"),
         browser_lock_path=_path("HUSKYSYNC_BROWSER_LOCK_PATH", data_dir / "browser.lock"),
-        blackboard_base_url=os.environ.get("HUSKYSYNC_BLACKBOARD_BASE_URL", "https://huskyct.uconn.edu").rstrip("/"),
+        blackboard_base_url=os.environ.get("HUSKYSYNC_BLACKBOARD_BASE_URL", "https://lms.uconn.edu").rstrip("/"),
         timezone=timezone,
         google_credentials_path=_path("HUSKYSYNC_GOOGLE_CREDENTIALS_PATH", data_dir / "credentials.json"),
         google_token_path=_path("HUSKYSYNC_GOOGLE_TOKEN_PATH", data_dir / "token.json"),
@@ -55,6 +56,7 @@ def load_settings() -> Settings:
         imap_username=os.environ.get("HUSKYSYNC_IMAP_USERNAME") or None,
         imap_password=os.environ.get("HUSKYSYNC_IMAP_PASSWORD") or None,
         imap_access_token=os.environ.get("HUSKYSYNC_IMAP_ACCESS_TOKEN") or None,
+        google_tasklist_id=os.environ.get("HUSKYSYNC_GOOGLE_TASKLIST_ID", "@default"),
     )
 
 

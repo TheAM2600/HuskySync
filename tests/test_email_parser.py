@@ -273,3 +273,29 @@ class EmailScanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_sample_email_file_uses_the_live_filter_and_is_idempotent(tmp_path):
+    import json
+
+    from app.email_parser import import_sample_emails
+
+    sample = tmp_path / "emails.json"
+    sample.write_text(json.dumps({"emails": [
+        {"id": "a", "from_email": "instructor@uconn.edu", "subject": "Project", "received_at": "2026-10-05T08:00:00-04:00",
+         "body": "Project 2 is due by October 9 at 5 PM."},
+        {"id": "b", "from_email": "club@gmail.com", "subject": "Deadline", "received_at": "2026-10-05T08:00:00-04:00",
+         "body": "Sign up is due by October 9 at 5 PM."},
+        {"id": "c", "subject": "Missing sender"},
+    ]}), encoding="utf-8")
+    factory = create_session_factory(tmp_path / "sample.sqlite3")
+    try:
+        first = import_sample_emails(sample, session_factory=factory)
+        assert (first.new_count, first.skipped_count) == (1, 2)
+        with factory() as session:
+            item = session.scalars(select(EmailActionItem)).one()
+            assert item.sender == "instructor@uconn.edu"
+            assert item.suggested_deadline == datetime(2026, 10, 9, 21, 0, tzinfo=UTC)
+        assert import_sample_emails(sample, session_factory=factory).new_count == 0
+    finally:
+        factory.kw["bind"].dispose()
