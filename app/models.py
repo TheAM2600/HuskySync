@@ -108,6 +108,16 @@ class Assignment(Base):
         return AssignmentStatus.NOT_SUBMITTED
 
 
+class GoogleTaskLink(Base):
+    """The Google Task created for an assignment; a separate table so existing databases need no migration."""
+
+    __tablename__ = "google_task_links"
+
+    assignment_id: Mapped[int] = mapped_column(ForeignKey("assignments.id", ondelete="CASCADE"), primary_key=True)
+    tasklist_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
 class EmailActionItem(Base):
     __tablename__ = "email_action_items"
 

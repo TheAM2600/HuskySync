@@ -28,6 +28,29 @@ The `.husky_sync/` directory, OAuth files, virtual environment, and local secret
 are excluded from Git. Browser profiles and OAuth tokens grant account access;
 keep them on your own computer and out of shared folders.
 
+## Public demo (sample data, no accounts)
+
+`demo_app.py` runs the same dashboard on the sample coursework in
+`assignments.json` and the sample messages in `emails.json`. It contacts no
+HuskyCT, Outlook, or Google account: those buttons are disabled, and visitors can
+filter coursework, load the sample emails, turn them into tasks, and reset the
+data. Sample deadlines are shifted so the file's reference date falls on today.
+
+```bash
+python -m streamlit run demo_app.py
+```
+
+To give other people a link, deploy it on
+[Streamlit Community Cloud](https://share.streamlit.io/): sign in with GitHub,
+choose **Create app**, select this repository and branch, and set the main file
+path to `demo_app.py`. Everyone who opens the link shares one sample database,
+which is recreated whenever the app restarts.
+
+Deploy only `demo_app.py`. Publishing `app/dashboard.py`, or exposing a local
+copy that is connected to real accounts, would show your coursework to anyone
+with the link and let them write to your Google account. Real use stays on each
+person's own computer, as described below.
+
 ## Connect HuskyCT and McGraw-Hill
 
 With the virtual environment activated:
@@ -167,6 +190,22 @@ It does not update previously synced deadlines automatically: use **Update Googl
 Calendar** after a deadline moves. Events are not automatically removed when an
 assignment is submitted.
 
+### Google Tasks (optional, per assignment)
+
+Enable the **Google Tasks API** in the same Google Cloud project, then run
+`python -m app.calendar_sync auth` again so the saved token includes Tasks access
+(a token authorized before this feature must be renewed once). In the dashboard's
+**Google Tasks** section, tick the assignments you want and press **Sync selected
+to Google Tasks**; nothing is sent for unticked rows. The **Preselect** control
+starts from unsubmitted assignments, all, or none.
+
+Tasks are titled `[CSE 3100] Assignment title` and appear in Google Calendar's
+Tasks view. Google Tasks stores a due date without a time, so the exact deadline
+is written in the task notes. Submitted assignments are added as completed tasks.
+Syncing again updates the same task; unticking a row later does not delete a task
+that was already created. `HUSKYSYNC_GOOGLE_TASKLIST_ID` selects a list other than
+the default one.
+
 Set `HUSKYSYNC_GOOGLE_CALENDAR_ID` to use a separate writable calendar instead of
 `primary`. Keep this target stable after syncing; stored event IDs refer to their
 original calendar.
@@ -182,7 +221,7 @@ reference; `.env` files are not loaded automatically. Defaults use the repositor
 | `HUSKYSYNC_DATA_DIR` | `.husky_sync/`; local state root |
 | `HUSKYSYNC_DATABASE_PATH` | `<data_dir>/husky_sync.sqlite3` |
 | `HUSKYSYNC_TIMEZONE` | `America/New_York`; display and date interpretation |
-| `HUSKYSYNC_BLACKBOARD_BASE_URL` | `https://huskyct.uconn.edu` |
+| `HUSKYSYNC_BLACKBOARD_BASE_URL` | `https://lms.uconn.edu` (where `huskyct.uconn.edu` redirects) |
 | `HUSKYSYNC_BROWSER_PROFILE_DIR` | `<data_dir>/browser_profile` |
 | `HUSKYSYNC_BROWSER_LOCK_PATH` | `<data_dir>/browser.lock` |
 | `HUSKYSYNC_BROWSER_EXECUTABLE_PATH` | Optional existing Chromium executable; otherwise Playwright's bundled browser |

@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .husky_sync/
+.husky_sync_demo/
+.vscode/
 .streamlit/secrets.toml
 credentials.json
 token.json

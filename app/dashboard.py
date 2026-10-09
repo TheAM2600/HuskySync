@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import os
 from pathlib import Path
+import re
 import sys
 from zoneinfo import ZoneInfo
 
@@ -22,10 +24,12 @@ from sqlalchemy import select
 from app.calendar_sync import sync_all_urgent, sync_assignment
 from app.config import settings
 from app.database import SessionLocal, init_db
-from app.email_parser import scan_recent_emails
-from app.models import Assignment, AssignmentOrigin, AssignmentStatus, EmailActionItem, EmailActionStatus
+from app.demo_data import ensure_demo_data, reset_demo_data
+from app.email_parser import import_sample_emails, scan_recent_emails
+from app.models import Assignment, AssignmentOrigin, AssignmentStatus, EmailActionItem, EmailActionStatus, GoogleTaskLink
 from app.scraper import sync_huskyct
 from app.services import convert_email_to_assignment, dismiss_email
+from app.tasks_sync import sync_assignments_to_tasks
 
 
 def run_browser_sync():
@@ -44,6 +48,54 @@ def local_time(value: datetime) -> str:
     return value.astimezone(ZoneInfo(settings.timezone)).strftime("%a, %b %d, %Y · %I:%M %p %Z")
 
 
+TERM_CODE_RE = re.compile(r"^1(\d{2})([1358])-|-1(\d{2})([1358])$")
+TERM_SEASONS = {"1": 0, "3": 1, "5": 2, "8": 3}
+SEASON_NAMES = ("Winter", "Spring", "Summer", "Fall")
+
+
+def semester_for_date(value: datetime) -> tuple[int, int]:
+    local = value.astimezone(ZoneInfo(settings.timezone))
+    if local.month <= 5:
+        return local.year, 1
+    return local.year, 2 if (local.month, local.day) < (8, 16) else 3
+
+
+def semester_of(assignment: Assignment) -> tuple[int, int]:
+    """(year, season) from the term code in a HuskyCT course name, else from the due date."""
+    match = TERM_CODE_RE.search(assignment.course_name.strip())
+    if match:
+        year, season = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+        return 2000 + int(year), TERM_SEASONS[season]
+    return semester_for_date(assignment.due_date)
+
+
+def semester_label(semester: tuple[int, int]) -> str:
+    return f"{SEASON_NAMES[semester[1]]} {semester[0]}"
+
+
+def choose_semester(assignments: list[Assignment]) -> list[Assignment]:
+    """Show one semester at a time, starting on the current one."""
+    semesters = sorted({semester_of(a) for a in assignments}, reverse=True)
+    if not semesters:
+        return assignments
+    labels = [semester_label(item) for item in semesters]
+    current = semester_for_date(datetime.now(ZoneInfo(settings.timezone)))
+    default = semesters.index(current) if current in semesters else len(labels)
+    choice = st.selectbox("Semester", [*labels, "All semesters"], index=default,
+                          help="Older semesters stay saved; pick one here or All semesters to see them.")
+    if choice == "All semesters":
+        return assignments
+    return [a for a in assignments if semester_label(semester_of(a)) == choice]
+
+
+DEMO_HELP = "Disabled in the public demo. Run HuskySync on your own computer to connect your accounts."
+
+
+def demo_mode() -> bool:
+    """True for the public sample-data deployment started through demo_app.py."""
+    return os.environ.get("HUSKYSYNC_DEMO") == "1"
+
+
 def flash(message: str) -> None:
     st.session_state["husky_sync_notice"] = message
     st.rerun()
@@ -57,7 +109,7 @@ def readable_error(exc: Exception) -> str:
 
 def calendar_button(assignment: Assignment, key: str) -> None:
     label = "Update Google Calendar" if assignment.calendar_event_id else "Add to Google Calendar"
-    if st.button(label, key=key, type="primary"):
+    if st.button(label, key=key, type="primary", disabled=demo_mode(), help=DEMO_HELP if demo_mode() else None):
         try:
             with st.spinner("Saving calendar event…"):
                 result = sync_assignment(assignment.id)
@@ -69,15 +121,22 @@ def calendar_button(assignment: Assignment, key: str) -> None:
 def draw_header() -> None:
     st.title("🐾 HuskySync")
     st.caption("Your coursework, email action items, and Google Calendar in one local dashboard.")
-    status = st.columns(3)
-    status[0].caption("SQLite · connected")
-    profile_saved = settings.browser_profile_dir.exists() and any(settings.browser_profile_dir.iterdir())
-    status[1].caption("HuskyCT · browser profile saved" if profile_saved else "HuskyCT · login needed")
-    status[2].caption("Google · token cached" if settings.google_token_path.exists() else "Google · authorization needed")
-    st.caption("Saved profiles and tokens may expire; sync verifies access when you use it.")
+    demo = demo_mode()
+    account_help = DEMO_HELP if demo else None
+    if demo:
+        st.info("**Demo mode.** You are looking at sample coursework and sample emails, shared by everyone who opens this page. "
+                "Connecting your own HuskyCT, Outlook, and Google accounts works only when you run HuskySync on your own computer, "
+                "so your logins never leave it. See the README for setup.")
+    else:
+        status = st.columns(3)
+        status[0].caption("SQLite · connected")
+        profile_saved = settings.browser_profile_dir.exists() and any(settings.browser_profile_dir.iterdir())
+        status[1].caption("HuskyCT · browser profile saved" if profile_saved else "HuskyCT · login needed")
+        status[2].caption("Google · token cached" if settings.google_token_path.exists() else "Google · authorization needed")
+        st.caption("Saved profiles and tokens may expire; sync verifies access when you use it.")
 
     controls = st.columns(3)
-    if controls[0].button("Sync HuskyCT", use_container_width=True):
+    if controls[0].button("Sync HuskyCT", use_container_width=True, disabled=demo, help=account_help):
         try:
             with st.spinner("Reading HuskyCT pages…"):
                 result = run_browser_sync()
@@ -86,7 +145,7 @@ def draw_header() -> None:
                 st.warning(warning)
         except Exception as exc:
             st.error(f"HuskyCT sync failed: {exc}")
-    if controls[1].button("Scan Emails", use_container_width=True):
+    if controls[1].button("Scan Emails", use_container_width=True, disabled=demo, help=account_help):
         try:
             with st.spinner("Reading recent unread messages…"):
                 result = scan_recent_emails()
@@ -95,7 +154,7 @@ def draw_header() -> None:
                 st.warning(warning)
         except Exception as exc:
             st.error(f"Email scan failed: {exc}")
-    if controls[2].button("Sync all urgent", use_container_width=True):
+    if controls[2].button("Sync all urgent", use_container_width=True, disabled=demo, help=account_help):
         try:
             with st.spinner("Adding upcoming deadlines…"):
                 result = sync_all_urgent()
@@ -104,6 +163,25 @@ def draw_header() -> None:
                 st.error(f"Assignment {failure.assignment_id}: {failure.error}")
         except Exception as exc:
             st.error(f"Calendar sync failed: {readable_error(exc)}")
+
+    sample_emails = PROJECT_ROOT / "emails.json"
+    if sample_emails.is_file():
+        with st.expander("Test email scanning with sample emails", expanded=demo):
+            st.caption("Runs the fake messages in emails.json through the same sender filter and deadline parser as Scan Emails. No mailbox is contacted.")
+            if st.button("Load sample emails", key="load_sample_emails"):
+                try:
+                    result = import_sample_emails(sample_emails, session_factory=SessionLocal)
+                    st.success(f"Added {result.new_count} email action items; skipped {result.skipped_count} messages (unrecognized sender, nothing actionable, or already loaded).")
+                    for warning in result.warnings:
+                        st.warning(warning)
+                except Exception as exc:
+                    st.error(f"Sample emails could not be loaded: {exc}")
+
+    if demo:
+        if st.button("Reset demo data", key="reset_demo", help="Undo everything visitors changed and reload the sample coursework."):
+            reset_demo_data(SessionLocal)
+            flash("Demo data reset.")
+        return
 
     with st.expander("Connection setup"):
         st.markdown("Complete UConn NetID and Duo in the local browser opened by this command:")
@@ -186,6 +264,63 @@ def draw_assignment_tracker(assignments: list[Assignment]) -> None:
                 flash("Email task reopened." if completed else "Email task completed.")
 
 
+# Streamlit has no per-container background option, so each keyed section is
+# tinted with CSS. Translucent colors keep text readable in light and dark themes.
+SECTION_TINTS = {
+    "section_alerts": "239, 68, 68",
+    "section_tracker": "59, 130, 246",
+    "section_tasks": "34, 197, 94",
+    "section_email": "245, 158, 11",
+}
+SECTION_STYLES = "<style>" + "".join(
+    f".st-key-{key} {{ background-color: rgba({rgb}, 0.07); border-color: rgba({rgb}, 0.35); }}"
+    for key, rgb in SECTION_TINTS.items()
+) + "</style>"
+
+
+def draw_task_sync(assignments: list[Assignment]) -> None:
+    st.subheader("Google Tasks")
+    st.caption("Tick the assignments you want in Google Tasks (shown in Google Calendar's Tasks view). Nothing is sent until you press the button.")
+    if not assignments:
+        return
+    with SessionLocal() as session:
+        linked = set(session.scalars(select(GoogleTaskLink.assignment_id)))
+    preset = st.radio("Preselect", ["Not submitted", "All", "None"], horizontal=True, key="task_preset")
+    frame = pd.DataFrame(
+        [{"Sync": preset == "All" or (preset == "Not submitted" and a.status != AssignmentStatus.SUBMITTED),
+          "Course": a.course_code, "Assignment": a.title, "Due": local_time(a.due_date),
+          "Status": STATUS_LABELS[a.effective_status],
+          "Google Tasks": "Synced" if a.id in linked else "Not synced"}
+         for a in assignments],
+        index=[a.id for a in assignments],
+    )
+    # Keying by preset resets the checkboxes when the preset changes.
+    edited = st.data_editor(frame, hide_index=True, use_container_width=True, key=f"task_editor_{preset}",
+                            disabled=[column for column in frame.columns if column != "Sync"],
+                            column_config={"Sync": st.column_config.CheckboxColumn("Sync", help="Send this assignment to Google Tasks")})
+    chosen = [int(item_id) for item_id in edited.index[edited["Sync"]]]
+    st.caption("Submitted assignments are added as completed tasks. Google Tasks keeps the due date only; the exact time is in the task notes. Syncing again updates existing tasks instead of duplicating them.")
+    if st.button(f"Sync {len(chosen)} selected to Google Tasks", key="task_sync_selected", type="primary",
+                 disabled=not chosen or demo_mode(), help=DEMO_HELP if demo_mode() else None):
+        try:
+            with st.spinner("Saving tasks…"):
+                result = sync_assignments_to_tasks(chosen, session_factory=SessionLocal)
+        except Exception as exc:
+            st.error(f"Google Tasks sync failed: {readable_error(exc)}")
+            return
+        if not result.failures:
+            flash(f"Synced {result.synced} assignment(s) to Google Tasks.")
+        if result.synced:
+            st.success(f"Synced {result.synced} assignment(s) to Google Tasks.")
+        errors: dict[str, int] = {}
+        for failure in result.failures:
+            errors[failure.error] = errors.get(failure.error, 0) + 1
+        for error, count in errors.items():
+            st.error(f"{count} assignment(s) not synced: {error}")
+        if any("HTTP 403" in error for error in errors):
+            st.info("HTTP 403 usually means the Google Tasks API is not enabled for your Google Cloud project, or the saved authorization predates Tasks access. Enable the API, then run `python -m app.calendar_sync auth` again.")
+
+
 def draw_email_actions(items: list[EmailActionItem]) -> None:
     with st.expander(f"Email action drawer · {len(items)} pending", expanded=True):
         st.caption("Review extracted dates before adding tasks. Email parsing uses heuristics and can miss or misread a deadline.")
@@ -223,6 +358,8 @@ def draw_email_actions(items: list[EmailActionItem]) -> None:
 def main() -> None:
     st.set_page_config(page_title="HuskySync", page_icon="🐾", layout="wide")
     init_db()
+    if demo_mode():
+        ensure_demo_data(SessionLocal)
     if notice := st.session_state.pop("husky_sync_notice", None):
         st.success(notice)
     draw_header()
@@ -231,9 +368,16 @@ def main() -> None:
         items = list(session.scalars(select(EmailActionItem).where(EmailActionItem.status == EmailActionStatus.PENDING)
                                     .order_by(EmailActionItem.received_at.desc())))
         # Keep the read session open during rendering; mutations use separate short sessions.
-        draw_critical_alerts(assignments)
-        draw_assignment_tracker(assignments)
-        draw_email_actions(items)
+        assignments = choose_semester(assignments)
+        st.html(SECTION_STYLES)
+        with st.container(key="section_alerts", border=True):
+            draw_critical_alerts(assignments)
+        with st.container(key="section_tracker", border=True):
+            draw_assignment_tracker(assignments)
+        with st.container(key="section_tasks", border=True):
+            draw_task_sync(assignments)
+        with st.container(key="section_email", border=True):
+            draw_email_actions(items)
 
 
 if __name__ == "__main__":

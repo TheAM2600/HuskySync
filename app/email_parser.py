@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import imaplib
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from email import policy
 from email.header import decode_header, make_header
 from email.parser import BytesParser
@@ -326,6 +328,55 @@ def _source_key(message: ParsedEmail, raw: bytes, account: str, host: str, uidva
     else:
         identity = f"{host}|{account.casefold()}|content:{hashlib.sha256(raw).hexdigest()}"
     return "email:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def import_sample_emails(path: Path | str, *, session_factory: Callable | None = None) -> ScanResult:
+    """Run a JSON file of sample messages through the same filter and parser as a live scan.
+
+    This exercises the email feature without a mailbox. The file holds an
+    ``emails`` list whose entries have ``id``, ``from_email``, ``subject``,
+    ``received_at`` (ISO 8601), and ``body``. Rerunning skips messages already imported.
+    """
+    try:
+        entries = json.loads(Path(path).read_text(encoding="utf-8"))["emails"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"{path} is not a readable sample email file with an emails list.") from exc
+    if session_factory is None:
+        init_db()
+        session_factory = SessionLocal
+    result = ScanResult()
+    with session_factory() as session:
+        for entry in entries:
+            try:
+                message = ParsedEmail(
+                    sender=str(entry["from_email"]).strip().casefold(),
+                    subject=str(entry["subject"]).strip(),
+                    received_at=_aware_utc(datetime.fromisoformat(str(entry["received_at"]))),
+                    body=str(entry["body"]),
+                    message_id=str(entry["id"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                result.skipped_count += 1
+                result.warnings.append("A sample message is missing a required field and was skipped.")
+                continue
+            action = extract_action_item(message) if is_allowed_sender(message.sender) else None
+            source_key = "email:sample:" + hashlib.sha256(message.message_id.encode("utf-8")).hexdigest()
+            if action is None or session.scalar(select(EmailActionItem.id).where(EmailActionItem.source_key == source_key)) is not None:
+                result.skipped_count += 1
+                continue
+            session.add(EmailActionItem(
+                sender=message.sender,
+                subject=message.subject,
+                received_at=message.received_at,
+                extracted_type=action.extracted_type,
+                summary=action.summary,
+                suggested_deadline=action.suggested_deadline,
+                status=EmailActionStatus.PENDING,
+                source_key=source_key,
+            ))
+            result.new_count += 1
+        session.commit()
+    return result
 
 
 def scan_recent_emails(

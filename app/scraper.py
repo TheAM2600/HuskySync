@@ -54,15 +54,20 @@ DEFAULT_ASSIGNMENT_SELECTORS = (
     ".stream-entry",
     ".calendar-event",
     "tr[data-due-date]",
+    # Blackboard Ultra's calendar "Due Dates" view, as served at UConn.
+    ".element-card.due-item",
 )
+DEADLINE_VIEW_BUTTON = ".js-viewSwitch-deadline-button"
+GRADEBOOK_ROW_SELECTOR = "tr[data-testid^='course-student-grades-table-row-']"
 TITLE_SELECTORS = (
     "[data-assignment-title]", "[data-testid='assignment-title']",
     "[data-test-id='assignment-title']", ".assignment-title", ".event-title",
-    ".stream-item-title", "h1", "h2", "h3", "h4",
+    ".stream-item-title", "h1", "h2", "h3", "h4", ".due-item .name a",
 )
 COURSE_SELECTORS = (
     "[data-course-code]", "[data-course-name]", "[data-testid='course-name']",
     "[data-test-id='course-name']", ".course-name", ".course-title", ".course-code",
+    "a[analytics-id$='openCourseOutline']",
 )
 DUE_SELECTORS = (
     "[data-due-date]", "time[datetime]", "[data-testid='due-date']",
@@ -384,7 +389,8 @@ def parse_html(
                     raw_due = match.group(1)
                     break
         due_date = parse_due_date(raw_due, now=now, overdue=status in {AssignmentStatus.OVERDUE, AssignmentStatus.SUBMITTED})
-        direct_url = _assignment_link(node, base_url)
+        # Ultra renders the due-item course link without its "courses" segment.
+        direct_url = re.sub(r"/ultra//(?=_\d+_\d+/)", "/ultra/courses/", _assignment_link(node, base_url))
         text = node.get_text(" ", strip=True)
         is_external = publisher or _publisher_host(urlparse(direct_url).hostname) or bool(PUBLISHER_RE.search(text))
         if not title or due_date is None:
@@ -421,6 +427,60 @@ def parse_html(
         result.warnings.append(f"{source_route or 'Page'}: {missing_course} assignment(s) have no course code in the page; shown as UNKNOWN.")
     if missing_publisher_deadline:
         result.warnings.append(f"{source_route or 'Page'}: flagged {missing_publisher_deadline} external publisher launch(es) with no usable deadline. Open Connect during interactive login and configure its assignment-list URL; a launch alone supplies no publisher submission status.")
+    return result
+
+
+def parse_gradebook_html(html: str, *, base_url: str, source_route: str = "", now: datetime | None = None) -> ParseResult:
+    """Extract past and submitted work from one course's Ultra gradebook table.
+
+    The table lists a due date without a clock time. Finished or past-due rows
+    are recorded at 11:59 PM local time; upcoming unsubmitted rows are left to
+    the calendar's Due Dates view, which carries the exact deadline.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    result = ParseResult()
+    page_title = _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else ""
+    course_name = _clean_text(page_title.split("/", 1)[1]) if "/" in page_title else ""
+    match = COURSE_CODE_RE.search(course_name)
+    course_code = f"{match.group(1).upper()} {match.group(2).upper()}" if match else "UNKNOWN"
+    course_name = course_name or course_code
+    current = now or datetime.now(timezone.utc)
+    for row in soup.select(GRADEBOOK_ROW_SELECTOR):
+        cells = {str(cell.get("aria-describedby", "")).rsplit("-", 1)[-1]: cell for cell in row.find_all("td")}
+        title = _attr_or_text(row.select_one("[id^='course-student-grades-item-name-']"))
+        raw_due = _attr_or_text(cells.get("dueDate"))
+        if not title or not raw_due:
+            continue
+        detail = f"{_attr_or_text(cells.get('status'))} {_attr_or_text(row.select_one('[data-testid=item-description]'))}"
+        graded = cells.get("grade") is not None and cells["grade"].select_one(".js-pill-grade") is not None
+        submitted = graded or bool(re.search(r"\bgraded\b|\bsubmitted\b|\bparticipated\b|\bcompleted?\b", detail, re.I))
+        status = AssignmentStatus.SUBMITTED if submitted else AssignmentStatus.NOT_SUBMITTED
+        due_date = parse_due_date(raw_due, now=now, overdue=True) or parse_due_date(f"{raw_due} 11:59 PM", now=now, overdue=True)
+        if due_date is None:
+            result.skipped += 1
+            continue
+        if not submitted and due_date > current:
+            continue
+        # Matches the fallback identity of the same item in the calendar view.
+        signature = f"{(course_name if course_code == 'UNKNOWN' else course_code).casefold()}\0{title.casefold()}"
+        try:
+            item = AssignmentInput(
+                course_code=course_code,
+                course_name=course_name,
+                title=title,
+                due_date=due_date,
+                origin=AssignmentOrigin.BLACKBOARD,
+                direct_url=_safe_url(source_route, base_url),
+                status=status,
+                source_key=f"blackboard:fallback:{hashlib.sha256(signature.encode()).hexdigest()}",
+                is_external=False,
+            )
+        except ValidationError:
+            result.skipped += 1
+            continue
+        _merge_observations(result, ParseResult(assignments=[item], submission_observed={_assignment_key(item): True}))
+    if result.skipped:
+        result.warnings.append(f"{source_route or 'Gradebook'}: skipped {result.skipped} item(s) with an unreadable due date.")
     return result
 
 
@@ -479,6 +539,50 @@ def _browser_options(headless: bool) -> dict[str, Any]:
     return options
 
 
+def _session_cookie_path() -> Path:
+    return Path(settings.browser_profile_dir).with_name("browser_session.json")
+
+
+async def _save_session_cookies(context: Any) -> None:
+    """Keep session-only cookies, which Chromium discards when the browser closes.
+
+    Blackboard's login cookie has no expiry, so the persistent profile alone
+    cannot carry a login into the next launch. The file grants account access.
+    """
+    keys = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
+    cookies = [{key: cookie[key] for key in keys if key in cookie} for cookie in await context.cookies() if cookie.get("expires", -1) == -1]
+    path = _session_cookie_path()
+    path.write_text(json.dumps(cookies), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+async def _restore_session_cookies(context: Any) -> None:
+    path = _session_cookie_path()
+    if not path.exists():
+        return
+    try:
+        cookies = json.loads(path.read_text(encoding="utf-8"))
+        if cookies:
+            await context.add_cookies(cookies)
+    except (OSError, ValueError, PlaywrightError):
+        # An unreadable file only means the user has to log in again.
+        return
+
+
+async def _wait_for_activity_stream(page: Any, *, timeout_seconds: int = 600) -> None:
+    """Without a terminal to confirm in, wait until the login visibly completes."""
+    host = urlparse(settings.blackboard_base_url).hostname
+    for _ in range(timeout_seconds // 2):
+        parsed = urlparse(page.url)
+        if parsed.hostname == host and parsed.path.startswith("/ultra/"):
+            return
+        await page.wait_for_timeout(2_000)
+    raise AuthenticationRequired("Login was not completed in time. Run `python -m app.scraper login` again.")
+
+
 async def login_huskyct() -> None:
     """Open Chromium for SSO/Duo; wait for the user's explicit terminal input."""
     ensure_local_directories()
@@ -491,7 +595,11 @@ async def login_huskyct() -> None:
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto(urljoin(settings.blackboard_base_url, "/ultra/stream"), wait_until="domcontentloaded", timeout=60_000)
                 print("Complete UConn NetID SSO and Duo in the browser. Open any McGraw-Hill launches in another tab and sign in there too. Return this original tab to the HuskyCT Ultra activity stream before continuing.")
-                await asyncio.to_thread(input, "When the HuskyCT activity stream is visible, press Enter here to save the session: ")
+                try:
+                    await asyncio.to_thread(input, "When the HuskyCT activity stream is visible, press Enter here to save the session: ")
+                except EOFError:
+                    # No terminal to confirm in (isatty() is unreliable for NUL on Windows).
+                    await _wait_for_activity_stream(page)
                 await page.wait_for_load_state("domcontentloaded", timeout=60_000)
                 await _check_authentication(page)
                 if not urlparse(page.url).path.startswith("/ultra/"):
@@ -499,6 +607,7 @@ async def login_huskyct() -> None:
                         "Return the original browser tab to the HuskyCT Ultra activity stream before "
                         "pressing Enter. Run `python -m app.scraper login` again to finish saving the session."
                     )
+                await _save_session_cookies(context)
                 print("Browser session saved locally. You can now run `python -m app.scraper sync`.")
             finally:
                 await context.close()
@@ -517,9 +626,45 @@ def _connect_urls(configured: list[str] | None) -> list[str]:
     return safe
 
 
+async def _snapshot_gradebooks(page: Any) -> ParseResult:
+    """Read each course gradebook linked from the open /ultra/grades overview.
+
+    The overview only previews a few rows per course; the per-course table is
+    the one place that lists finished and past-due work with its status.
+    """
+    aggregate = ParseResult()
+    try:
+        await page.wait_for_selector("bb-base-grades-student[id^='card_']", state="attached", timeout=15_000)
+    except PlaywrightTimeoutError:
+        await _check_authentication(page)
+        return ParseResult(warnings=["/ultra/grades: no course gradebooks were listed, so past and submitted work could not be read."])
+    course_ids = list(dict.fromkeys(re.findall(r'id="card_(_\d+_\d+)"', await page.content())))
+    for course_id in course_ids:
+        route = f"/ultra/courses/{course_id}/grades"
+        try:
+            await page.goto(urljoin(settings.blackboard_base_url, route), wait_until="domcontentloaded", timeout=60_000)
+            await _check_authentication(page)
+            await page.wait_for_selector(GRADEBOOK_ROW_SELECTOR, state="attached", timeout=15_000)
+        except AuthenticationRequired:
+            raise
+        except PlaywrightError:
+            # A course without graded items renders no rows.
+            continue
+        _merge_observations(aggregate, parse_gradebook_html(await page.content(), base_url=page.url, source_route=route))
+    return aggregate
+
+
 async def _snapshot_page(page: Any, url: str, *, publisher: bool = False) -> ParseResult:
     await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     await _check_authentication(page, publisher=publisher)
+    if not publisher and urlparse(url).path.rstrip("/").endswith("/ultra/grades"):
+        return await _snapshot_gradebooks(page)
+    if urlparse(url).path.rstrip("/").endswith("/ultra/calendar"):
+        # The calendar opens on a schedule grid; deadlines are listed in its other view.
+        try:
+            await page.click(DEADLINE_VIEW_BUTTON, timeout=15_000)
+        except PlaywrightError:
+            pass
     configured = os.getenv("HUSKYSYNC_ASSIGNMENT_SELECTORS", "").strip()
     selector = configured or ",".join(DEFAULT_ASSIGNMENT_SELECTORS)
     try:
@@ -561,6 +706,7 @@ async def sync_huskyct(*, headless: bool = True, connect_urls: list[str] | None 
                 str(settings.browser_profile_dir), **_browser_options(headless=headless)
             )
             try:
+                await _restore_session_cookies(context)
                 page = context.pages[0] if context.pages else await context.new_page()
                 for route in BB_ROUTES:
                     try:

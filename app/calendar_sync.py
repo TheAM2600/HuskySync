@@ -30,7 +30,10 @@ from app.config import ensure_local_directories, settings
 from app.database import SessionLocal, init_db
 from app.models import Assignment, AssignmentStatus, now_utc
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/tasks",
+]
 
 
 class CalendarAuthenticationError(RuntimeError):
@@ -113,6 +116,16 @@ def _interactive_credentials(credentials_path: Path) -> Credentials:
 
 def authenticate_google(interactive: bool = False) -> Any:
     """Build a Calendar client; only explicit interactive calls open a browser."""
+    return build("calendar", "v3", credentials=google_credentials(interactive, SCOPES[:1]), cache_discovery=False)
+
+
+def google_credentials(interactive: bool = False, required_scopes: list[str] | None = None) -> Credentials:
+    """Load, refresh, or interactively obtain the one token shared by Calendar and Tasks.
+
+    A token saved before Tasks support still serves Calendar; only the caller's
+    own scopes are required of it. Interactive authorization requests them all.
+    """
+    required_scopes = SCOPES if interactive or required_scopes is None else required_scopes
     ensure_local_directories()
     token_path = Path(settings.google_token_path)
     credentials_path = Path(settings.google_credentials_path)
@@ -123,7 +136,7 @@ def authenticate_google(interactive: bool = False) -> Any:
             credentials = Credentials.from_authorized_user_file(str(token_path))
         except (ValueError, OSError):
             credentials = None
-    if credentials is not None and not credentials.has_scopes(SCOPES):
+    if credentials is not None and not credentials.has_scopes(required_scopes):
         credentials = None
     if credentials is not None and not credentials.valid:
         if credentials.expired and credentials.refresh_token:
@@ -142,14 +155,14 @@ def authenticate_google(interactive: bool = False) -> Any:
     if credentials is None or not credentials.valid:
         if not interactive:
             raise CalendarAuthenticationError(
-                "Google Calendar is not authorized. Place an OAuth Desktop app client JSON "
+                "Google Calendar and Tasks are not authorized. Place an OAuth Desktop app client JSON "
                 f"at {credentials_path} and run python -m app.calendar_sync auth locally."
             )
         credentials = _interactive_credentials(credentials_path)
         changed = True
     if changed:
         _write_token(credentials, token_path)
-    return build("calendar", "v3", credentials=credentials, cache_discovery=False)
+    return credentials
 
 
 def _aware_utc(value: datetime) -> datetime:
